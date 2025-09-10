@@ -1,5 +1,11 @@
 # discord-monitor
 
+核心代码是copy这两位大佬的，我仅添加了微信模块，在此表示感谢：
+https://github.com/Snapmali/discord-monitor
+https://github.com/dolfies/discord.py-self
+欢迎关注我的推特:  https://twitter.com/TestnetCn
+
+
 [![GitHub release](https://img.shields.io/github/v/release/Snapmali/discord-monitor?include_prereleases)](https://github.com/Snapmali/discord-monitor/releases)
 [![GitHub](https://img.shields.io/github/license/snapmali/discord-monitor)](https://github.com/Snapmali/discord-monitor/blob/master/LICENSE)
 

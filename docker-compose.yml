@@ -1,0 +1,40 @@
+version: '3.8'
+services:
+  discord-monitor:
+    build: 
+      context: .
+      dockerfile: Dockerfile.discord
+      args:
+        - HTTP_PROXY=http://host.docker.internal:7890 
+        - HTTPS_PROXY=http://host.docker.internal:7890
+    container_name: discord-monitor
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+      - type: volume
+        source: discord-data
+        target: /app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - IS_DOCKER=true
+      - HTTP_PROXY=http://host.docker.internal:7890
+      - HTTPS_PROXY=http://host.docker.internal:7890
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: "host"
+    restart: always
+    healthcheck:
+      test: ["CMD", "ps", "aux", "|", "grep", "DiscordMonitor.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  discord-data:

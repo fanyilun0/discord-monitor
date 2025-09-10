@@ -14,7 +14,7 @@ from pytz import timezone as tz
 from Config import config
 from Log import add_log
 from PushTextProcessor import PushTextProcessor
-from QQPush import QQPush
+import WxPush
 
 # Log file path
 log_path = 'discord_monitor.log'
@@ -36,7 +36,7 @@ class DiscordMonitor(discord.Client):
         self.message_channel_name = config.message_monitor.channel_names
         self.user_dynamic_user = config.user_dynamic_monitor.users
         self.user_dynamic_server = config.user_dynamic_monitor.servers
-        self.qq_push = QQPush()
+        self.wx_push = WxPush.send_weixin_message
         self.push_text_processor = PushTextProcessor()
         self.event_set = set()
         self.status_dict = {'online': '在线', 'offline': '离线', 'idle': '闲置', 'dnd': '请勿打扰'}
@@ -139,7 +139,7 @@ class DiscordMonitor(discord.Client):
                     "user_id": str(message.author.id),
                     "user_name": message.author.name,
                     "user_discriminator": message.author.discriminator,
-                    "channel_id:": str(message.channel.id),
+                    "channel_id": str(message.channel.id),
                     "channel_name": message.channel.name,
                     "server_id": str(message.guild.id),
                     "server_name": message.guild.name,
@@ -154,7 +154,11 @@ class DiscordMonitor(discord.Client):
         else:
             keywords["user_display_name"] = message.author.name + '#' + message.author.discriminator
         push_text = self.push_text_processor.push_text_process(keywords, is_user_dynamic=False)
-        asyncio.create_task(self.qq_push.push_message(push_text, 1))
+        # 创建带命名的任务并等待执行，以确保任务不会被忽略
+        task = asyncio.create_task(self.wx_push(push_text))
+        task.add_done_callback(
+            lambda t: add_log(2, 'Discord', f"推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+        )
 
     async def process_user_update(self, before, after, user: discord.Member, status):
         """
@@ -190,11 +194,15 @@ class DiscordMonitor(discord.Client):
                     "time": t,
                     "timezone": timezone.zone}
         push_text = self.push_text_processor.push_text_process(keywords, is_user_dynamic=True)
-        asyncio.create_task(self.qq_push.push_message(push_text, 2))
+        # 创建带命名的任务并等待执行，以确保任务不会被忽略
+        task = asyncio.create_task(self.wx_push(push_text))
+        task.add_done_callback(
+            lambda t: add_log(2, 'Discord', f"用户动态推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+        )
 
     async def on_ready(self, *args, **kwargs):
         """
-        完全准备好时触发，暂时用于处理大型服务器中无法接收消息的问题，随时可能被依赖库修复
+        完全准备好时触发，暂时用处理大型服务器中无法接收消息的问题，随时可能被依赖库修复
 
         :param args:
         :param kwargs:
@@ -235,6 +243,18 @@ class DiscordMonitor(discord.Client):
         log_text = 'Logged in as %s, ID: %d.' % (self.user.name + '#' + self.user.discriminator, self.user.id)
         print(log_text + '\n')
         add_log(0, 'Discord', log_text)
+        
+        # 推送连接成功信息
+        try:
+            connect_text = f"Discord监控程序连接成功，用户: {self.user.name}#{self.user.discriminator}，时间: {datetime.datetime.now(tz=timezone).strftime('%Y/%m/%d %H:%M:%S')}"
+            # 创建带命名的任务并等待执行
+            task = asyncio.create_task(self.wx_push(connect_text))
+            task.add_done_callback(
+                lambda t: add_log(0, 'Discord', f"连接成功推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+            )
+        except Exception as e:
+            add_log(2, 'Discord', f"连接成功推送失败: {str(e)}")
+            
         if self.user_monitoring:
             for uid in self.user_dynamic_user:
                 uid = int(uid)
@@ -259,6 +279,17 @@ class DiscordMonitor(discord.Client):
         log_text = 'Disconnected...'
         add_log(1, 'Discord', log_text)
         print()
+        
+        # 将断开连接信息也推送到webhook
+        try:
+            error_text = f"Discord监控程序断开连接，时间: {datetime.datetime.now(tz=timezone).strftime('%Y/%m/%d %H:%M:%S')}"
+            # 创建带命名的任务并等待执行
+            task = asyncio.create_task(self.wx_push(error_text))
+            task.add_done_callback(
+                lambda t: add_log(1, 'Discord', f"断开连接推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+            )
+        except Exception as e:
+            add_log(2, 'Discord', f"断开连接推送失败: {str(e)}")
 
     async def on_message(self, message):
         """
@@ -406,43 +437,62 @@ class DiscordMonitor(discord.Client):
 
     async def close(self):
         """
-        关闭至discord的连接，以及QQPush模块的连接
-
+        关闭至discord的连接
+        
         :return:
         """
-        await asyncio.gather(
-            super(DiscordMonitor, self).close(),
-            self.qq_push.close()
-        )
+        await super(DiscordMonitor, self).close()
 
+
+def push_error_message(error_msg):
+    """
+    将错误信息推送到webhook
+    
+    :param error_msg: 错误信息
+    :return:
+    """
+    try:
+        from WxPush import send_weixin_message
+        error_text = f"Discord监控程序错误: {error_msg}"
+        # 直接调用同步版本的send_weixin_message，因为在异常处理中可能无法正常处理异步任务
+        send_weixin_message(error_text)
+        add_log(2, 'Discord', f"错误信息已推送: {error_msg}")
+    except Exception as e:
+        add_log(2, 'Discord', f"错误信息推送失败: {str(e)}")
 
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     if config.bot:
         intents = discord.Intents.default()
-        dc = DiscordMonitor(loop=loop, intents=intents)
+        dc = DiscordMonitor(intents=intents)
     else:
-        dc = DiscordMonitor(loop=loop)
+        dc = DiscordMonitor()
     try:
         print('Logging in...')
         loop.run_until_complete(dc.start(config.token))
-    except (ClientProxyConnectionError, InvalidURL):
-        print('代理错误，请检查代理设置')
-    except (TimeoutError, ClientConnectorError):
-        print('连接超时，请检查连接状态及代理设置')
-    except discord.errors.LoginFailure:
-        print('登录失败，请检查Token及bot设置是否正确，或更新Token，或检查是否使用了正确的discord.py依赖库')
-    except KeyboardInterrupt:
-        print("用户退出")
-    except Exception:
-        print('登录失败，请检查配置文件中各参数是否正确')
+    except ClientConnectorError as e:
+        error_msg = f"连接错误: {str(e)}"
+        print(error_msg)
+        push_error_message(error_msg)
+        traceback.print_exc()
+    except ClientProxyConnectionError as e:
+        error_msg = f"代理连接错误: {str(e)}"
+        print(error_msg)
+        push_error_message(error_msg)
+        traceback.print_exc()
+    except InvalidURL as e:
+        error_msg = f"无效URL: {str(e)}"
+        print(error_msg)
+        push_error_message(error_msg)
+        traceback.print_exc()
+    except Exception as e:
+        error_msg = f"登录失败: {str(e)}"
+        print(error_msg)
+        push_error_message(error_msg)
         traceback.print_exc()
     finally:
         loop.run_until_complete(dc.close())
-        # 2022.5.8：
-        # Windows环境下aiohttp似乎会在程序退出释放内存时自动调用方法关闭事件循环导致报错，在此对平台进行特判
-        # 暂未测试在Linux下的表现
         if platform.system() != 'Windows':
             loop.close()
 
