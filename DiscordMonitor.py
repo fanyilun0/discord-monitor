@@ -157,7 +157,7 @@ class DiscordMonitor(discord.Client):
         # 创建带命名的任务并等待执行，以确保任务不会被忽略
         task = asyncio.create_task(self.wx_push(push_text))
         task.add_done_callback(
-            lambda t: add_log(2, 'Discord', f"推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+            lambda t: add_log(0, 'Discord', f"推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
         )
 
     async def process_user_update(self, before, after, user: discord.Member, status):
@@ -281,15 +281,15 @@ class DiscordMonitor(discord.Client):
         print()
         
         # 将断开连接信息也推送到webhook
-        try:
-            error_text = f"Discord监控程序断开连接，时间: {datetime.datetime.now(tz=timezone).strftime('%Y/%m/%d %H:%M:%S')}"
-            # 创建带命名的任务并等待执行
-            task = asyncio.create_task(self.wx_push(error_text))
-            task.add_done_callback(
-                lambda t: add_log(1, 'Discord', f"断开连接推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
-            )
-        except Exception as e:
-            add_log(2, 'Discord', f"断开连接推送失败: {str(e)}")
+        # try:
+        #     error_text = f"Discord监控程序断开连接，时间: {datetime.datetime.now(tz=timezone).strftime('%Y/%m/%d %H:%M:%S')}"
+        #     # 创建带命名的任务并等待执行
+        #     task = asyncio.create_task(self.wx_push(error_text))
+        #     task.add_done_callback(
+        #         lambda t: add_log(1, 'Discord', f"断开连接推送任务完成状态: {'成功' if not t.exception() else f'失败 - {t.exception()}'}")
+        #     )
+        # except Exception as e:
+        #     add_log(2, 'Discord', f"断开连接推送失败: {str(e)}")
 
     async def on_message(self, message):
         """
@@ -452,10 +452,10 @@ def push_error_message(error_msg):
     :return:
     """
     try:
-        from WxPush import send_weixin_message
+        from WxPush import send_weixin_message_sync
         error_text = f"Discord监控程序错误: {error_msg}"
-        # 直接调用同步版本的send_weixin_message，因为在异常处理中可能无法正常处理异步任务
-        send_weixin_message(error_text)
+        # 直接调用同步版本的send_weixin_message_sync，因为在异常处理中可能无法正常处理异步任务
+        send_weixin_message_sync(error_text)
         add_log(2, 'Discord', f"错误信息已推送: {error_msg}")
     except Exception as e:
         add_log(2, 'Discord', f"错误信息推送失败: {str(e)}")
