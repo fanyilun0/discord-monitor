@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import datetime
+import json
 import os
 import platform
 import traceback
@@ -51,6 +52,40 @@ class DiscordMonitor(discord.Client):
             self.message_monitoring = False
         if 0 in self.user_dynamic_server or len(self.user_dynamic_user) == 0:
             self.user_monitoring = False
+        self._config_mtime_ns = self._get_config_mtime()
+
+    @staticmethod
+    def _get_config_mtime():
+        try:
+            return os.stat('config.json').st_mtime_ns
+        except OSError:
+            return None
+
+    async def watch_config(self):
+        """Reload message channel filters whenever config.json changes."""
+        while not self.is_closed():
+            await asyncio.sleep(2)
+            mtime_ns = self._get_config_mtime()
+            if mtime_ns is None or mtime_ns == self._config_mtime_ns:
+                continue
+            try:
+                with open('config.json', 'r', encoding='utf8') as config_file:
+                    data = json.load(config_file)
+                monitor = type(config.message_monitor)(data['message_monitor'])
+                self.message_user = monitor.users
+                self.message_channel = monitor.channel_ids
+                self.message_channel_name = monitor.channel_names
+                self.message_monitoring = not (0 in self.message_channel and len(self.message_channel_name) == 0)
+                self._config_mtime_ns = mtime_ns
+                log_text = '配置已热重载：消息监听频道已更新。'
+                print(log_text)
+                add_log(0, 'Discord', log_text)
+            except Exception as error:
+                # Keep the old settings and retry on the next poll. This handles
+                # editors that briefly write an incomplete JSON file.
+                log_text = f'配置热重载失败，继续使用旧配置: {error}'
+                print(log_text)
+                add_log(2, 'Discord', log_text)
 
     def is_monitored_object(self, user, channel, server, user_dynamic=False):
         """
@@ -81,6 +116,26 @@ class DiscordMonitor(discord.Client):
                     return True
         return False
 
+    @staticmethod
+    def message_text(message: discord.Message):
+        """Combine ordinary message text with readable Discord embed text."""
+        parts = [message.content.strip()] if message.content and message.content.strip() else []
+        for embed in message.embeds:
+            embed_parts = []
+            if embed.author.name:
+                embed_parts.append(embed.author.name)
+            if embed.title:
+                embed_parts.append(embed.title)
+            if embed.description:
+                embed_parts.append(embed.description)
+            for field in embed.fields:
+                embed_parts.append(f"{field.name}: {field.value}")
+            if embed.footer.text:
+                embed_parts.append(embed.footer.text)
+            if embed_parts:
+                parts.append("\n".join(embed_parts))
+        return "\n\n".join(parts)
+
     async def process_message(self, message: discord.Message, status):
         """
         处理消息动态，并生成推送消息文本及log
@@ -89,7 +144,8 @@ class DiscordMonitor(discord.Client):
         :param status: 消息动态
         :return:
         """
-        content_cat = self.push_text_processor.get_content_cat(message.content)
+        raw_content = self.message_text(message)
+        content_cat = self.push_text_processor.get_content_cat(raw_content)
         if not content_cat and content_cat != "":
             return
         attachment_urls = list()
@@ -108,7 +164,7 @@ class DiscordMonitor(discord.Client):
                 attachment_urls.append(embed.image.proxy_url)
         attachment_str = ' ; '.join(attachment_urls)
         image_str = "".join(image_cqcodes)
-        content = self.push_text_processor.sub(message.content)
+        content = self.push_text_processor.sub(raw_content)
         if self.do_toast:
             if status == '标注消息':
                 toast_title = '%s #%s %s' % (message.guild.name, message.channel.name, status)
@@ -133,7 +189,7 @@ class DiscordMonitor(discord.Client):
         log_text = '%s: ID: %d. Username: %s. Server: %s. Channel: %s. Content: %s%s' % \
                    (status, message.author.id,
                     message.author.name + '#' + message.author.discriminator,
-                    message.guild.name, message.channel.name, message.content, attachment_log)
+                    message.guild.name, message.channel.name, raw_content, attachment_log)
         add_log(0, 'Discord', log_text)
         keywords = {"type": status,
                     "user_id": str(message.author.id),
@@ -301,7 +357,8 @@ class DiscordMonitor(discord.Client):
         if not self.message_monitoring:
             return
         # 消息标注事件亦会被捕获，同时其content及attachments为空，需特判排除
-        if self.is_monitored_object(message.author, message.channel, message.guild) and (message.content != '' or len(message.attachments) > 0):
+        if self.is_monitored_object(message.author, message.channel, message.guild) and (
+                message.content != '' or len(message.attachments) > 0 or len(message.embeds) > 0):
             await self.process_message(message, '发送消息')
 
     async def on_message_delete(self, message):
@@ -326,7 +383,8 @@ class DiscordMonitor(discord.Client):
         """
         if not self.message_monitoring:
             return
-        if self.is_monitored_object(after.author, after.channel, after.guild) and before.content != after.content:
+        if self.is_monitored_object(after.author, after.channel, after.guild) and (
+                before.content != after.content or before.embeds != after.embeds):
             await self.process_message(after, '编辑消息')
 
     async def on_guild_channel_pins_update(self, channel, last_pin):
@@ -470,6 +528,7 @@ def main():
         dc = DiscordMonitor()
     try:
         print('Logging in...')
+        loop.create_task(dc.watch_config())
         loop.run_until_complete(dc.start(config.token))
     except ClientConnectorError as e:
         error_msg = f"连接错误: {str(e)}"
